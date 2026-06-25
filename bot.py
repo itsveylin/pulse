@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from ai_service import ask_ai
+from memory_service import add_message, get_memory
 
 load_dotenv()
 
@@ -17,9 +18,11 @@ bot = commands.Bot(
     intents=intents
 )
 
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online!")
+
 
 @bot.event
 async def on_message(message):
@@ -42,16 +45,38 @@ async def on_message(message):
             return
 
         try:
-            answer = ask_ai(question)
+            user_id = str(message.author.id)
 
+            # Get previous conversation history
+            history = get_memory(user_id)
+
+            # Get AI response
+            answer = ask_ai(question, history)
+
+            # Store conversation
+            add_message(
+                user_id,
+                "user",
+                question
+            )
+
+            add_message(
+                user_id,
+                "assistant",
+                answer
+            )
+
+            # Split long responses
             if len(answer) > 1900:
+
                 chunks = [
-                    answer[i:i+1900]
+                    answer[i:i + 1900]
                     for i in range(0, len(answer), 1900)
                 ]
 
                 for chunk in chunks:
                     await message.author.send(chunk)
+
             else:
                 await message.author.send(answer)
 
@@ -63,5 +88,6 @@ async def on_message(message):
             )
 
     await bot.process_commands(message)
+
 
 bot.run(TOKEN)

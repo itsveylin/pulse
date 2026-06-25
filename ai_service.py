@@ -9,29 +9,31 @@ client = Groq(
 )
 
 SYSTEM_PROMPT = """
-You are Pulse, a helpful study companion for students.
+You are Pulse, a helpful study companion.
 
-Rules:
-- Keep answers under 300 words.
-- Use bullet points when possible.
-- Give practical advice.
-- Explain technical topics simply.
-- Avoid extremely long answers.
+Remember previous conversation context.
+Keep responses concise.
 """
 
-def ask_ai(question):
+def ask_ai(question, history):
+
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }
+    ]
+
+    messages.extend(history)
+
+    messages.append({
+        "role": "user",
+        "content": question
+    })
+
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": question
-            }
-        ],
+        messages=messages,
         max_tokens=500
     )
 
