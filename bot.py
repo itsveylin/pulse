@@ -5,10 +5,6 @@ from discord.ui import View, Button
 from dotenv import load_dotenv
 
 from ai_service import ask_ai
-from memory_service import add_message, get_memory
-from embeded import pulse_embed
-from database import connect_db
-from goals import add_goal, get_goals
 
 load_dotenv()
 
@@ -22,60 +18,6 @@ bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
-
-pending_goals = {}
-
-
-class GoalView(View):
-
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.button(
-        label="High",
-        style=discord.ButtonStyle.danger,
-        emoji="🟥"
-    )
-    async def high(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await interaction.response.send_message(
-            "High priority selected.",
-            ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Medium",
-        style=discord.ButtonStyle.secondary,
-        emoji="🟨"
-    )
-    async def medium(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await interaction.response.send_message(
-            "Medium priority selected.",
-            ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Low",
-        style=discord.ButtonStyle.success,
-        emoji="🟩"
-    )
-    async def low(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await interaction.response.send_message(
-            "Low priority selected.",
-            ephemeral=True
-        )
-
 
 @bot.event
 async def on_ready():
@@ -120,46 +62,16 @@ async def on_message(message):
             return
 
         try:
-            user_id = str(message.author.id)
+            answer = ask_ai(question)
 
-            # Get previous memory
-            history = get_memory(user_id)
-
-            # AI response
-            answer = ask_ai(question, history)
-
-            # Save memory
-            add_message(
-                user_id,
-                "user",
-                question
-            )
-
-            add_message(
-                user_id,
-                "assistant",
-                answer
-            )
-
-            # Send embeds
-            if len(answer) > 3500:
-
+            if len(answer) > 1900:
                 chunks = [
-                    answer[i:i + 3500]
-                    for i in range(
-                        0,
-                        len(answer),
-                        3500
-                    )
+                    answer[i:i+1900]
+                    for i in range(0, len(answer), 1900)
                 ]
 
                 for chunk in chunks:
-                    embed = pulse_embed(chunk)
-
-                    await message.author.send(
-                        embed=embed
-                    )
-
+                    await message.author.send(chunk)
             else:
                 embed = pulse_embed(answer)
 
