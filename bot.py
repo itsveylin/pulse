@@ -2,7 +2,10 @@ import os
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+
 from ai_service import ask_ai
+from memory_service import add_message, get_memory
+from embeded import pulse_embed
 
 load_dotenv()
 
@@ -17,9 +20,11 @@ bot = commands.Bot(
     intents=intents
 )
 
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online!")
+
 
 @bot.event
 async def on_message(message):
@@ -42,26 +47,59 @@ async def on_message(message):
             return
 
         try:
-            answer = ask_ai(question)
+            user_id = str(message.author.id)
 
-            if len(answer) > 1900:
+            # Get previous memory
+            history = get_memory(user_id)
+
+            # Get AI response
+            answer = ask_ai(question, history)
+
+            # Store memory
+            add_message(
+                user_id,
+                "user",
+                question
+            )
+
+            add_message(
+                user_id,
+                "assistant",
+                answer
+            )
+
+            # Send answer as embed
+            if len(answer) > 3500:
+
                 chunks = [
-                    answer[i:i+1900]
-                    for i in range(0, len(answer), 1900)
+                    answer[i:i + 3500]
+                    for i in range(
+                        0,
+                        len(answer),
+                        3500
+                    )
                 ]
 
                 for chunk in chunks:
-                    await message.author.send(chunk)
+                    embed = pulse_embed(chunk)
+                    await message.author.send(
+                        embed=embed
+                    )
+
             else:
-                await message.author.send(answer)
+                embed = pulse_embed(answer)
+                await message.author.send(
+                    embed=embed
+                )
 
         except Exception as e:
             print(f"Error: {e}")
 
             await message.author.send(
-                "Sorry, I encountered an error while processing your request."
+                "Sorry, something went wrong."
             )
 
     await bot.process_commands(message)
+
 
 bot.run(TOKEN)
