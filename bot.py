@@ -1,11 +1,14 @@
 import os
 import discord
 from discord.ext import commands
+from discord.ui import View, Button
 from dotenv import load_dotenv
 
 from ai_service import ask_ai
 from memory_service import add_message, get_memory
 from embeded import pulse_embed
+from database import connect_db
+from goals import add_goal, get_goals
 
 load_dotenv()
 
@@ -20,9 +23,63 @@ bot = commands.Bot(
     intents=intents
 )
 
+pending_goals = {}
+
+
+class GoalView(View):
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(
+        label="High",
+        style=discord.ButtonStyle.danger,
+        emoji="🟥"
+    )
+    async def high(
+        self,
+        interaction: discord.Interaction,
+        button: Button
+    ):
+        await interaction.response.send_message(
+            "High priority selected.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Medium",
+        style=discord.ButtonStyle.secondary,
+        emoji="🟨"
+    )
+    async def medium(
+        self,
+        interaction: discord.Interaction,
+        button: Button
+    ):
+        await interaction.response.send_message(
+            "Medium priority selected.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Low",
+        style=discord.ButtonStyle.success,
+        emoji="🟩"
+    )
+    async def low(
+        self,
+        interaction: discord.Interaction,
+        button: Button
+    ):
+        await interaction.response.send_message(
+            "Low priority selected.",
+            ephemeral=True
+        )
+
 
 @bot.event
 async def on_ready():
+    connect_db()
     print(f"{bot.user} is online!")
 
 
@@ -40,6 +97,22 @@ async def on_message(message):
             f"<@!{bot.user.id}>", ""
         ).strip()
 
+        # Goal command
+        if question.lower().startswith("add goal"):
+
+            goal = question[8:].strip()
+
+            pending_goals[
+                str(message.author.id)
+            ] = goal
+
+            await message.author.send(
+                "☕ Choose a priority for your goal.",
+                view=GoalView()
+            )
+
+            return
+
         if not question:
             await message.author.send(
                 "Hi! Ask me a question."
@@ -52,10 +125,10 @@ async def on_message(message):
             # Get previous memory
             history = get_memory(user_id)
 
-            # Get AI response
+            # AI response
             answer = ask_ai(question, history)
 
-            # Store memory
+            # Save memory
             add_message(
                 user_id,
                 "user",
@@ -68,7 +141,7 @@ async def on_message(message):
                 answer
             )
 
-            # Send answer as embed
+            # Send embeds
             if len(answer) > 3500:
 
                 chunks = [
@@ -82,12 +155,14 @@ async def on_message(message):
 
                 for chunk in chunks:
                     embed = pulse_embed(chunk)
+
                     await message.author.send(
                         embed=embed
                     )
 
             else:
                 embed = pulse_embed(answer)
+
                 await message.author.send(
                     embed=embed
                 )
