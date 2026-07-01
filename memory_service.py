@@ -1,10 +1,7 @@
 memory = {}
 
 def add_message(user_id, role, content):
-<<<<<<< HEAD
 
-=======
->>>>>>> 690426bfecb126a1fc0e26a55a879fbbd4fcdff4
     if user_id not in memory:
         memory[user_id] = []
 
