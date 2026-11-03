@@ -1,20 +1,31 @@
+
 import os
 import asyncio
 import discord
+
 from discord.ext import commands
 from discord.ui import View, Button
 from dotenv import load_dotenv
 
 from onboarding import welcome_embed, dm_embed
-from ai_service import ask_ai
+from ai_service import analyze_message
 from memory_service import add_message, get_memory
 from embeded import pulse_embed
 from database import connect_db
 from goals import add_goal, get_goals
 
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+
+if not TOKEN:
+    raise ValueError("DISCORD_TOKEN is missing from your .env file")
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -28,17 +39,28 @@ bot = commands.Bot(
 pending_goals = {}
 
 
+# ==========================================
+# GOAL PRIORITY VIEW
+# ==========================================
+
 class GoalView(View):
 
     def __init__(self, user_id):
         super().__init__(timeout=300)
-        self.user_id = user_id
+        self.user_id = str(user_id)
 
     async def save_goal(self, interaction, priority):
 
-        goal = pending_goals.get(self.user_id)
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This goal selection does not belong to you.",
+                ephemeral=True
+            )
+            return
 
-        if not goal:
+        goal_data = pending_goals.get(self.user_id)
+
+        if not goal_data:
             await interaction.response.send_message(
                 "Goal expired.",
                 ephemeral=True
@@ -47,8 +69,10 @@ class GoalView(View):
 
         add_goal(
             self.user_id,
-            goal,
-            priority
+            goal_data["goal"],
+            priority,
+            deadline=goal_data.get("deadline"),
+            goal_type=goal_data.get("goal_type", "general")
         )
 
         del pending_goals[self.user_id]
@@ -56,11 +80,19 @@ class GoalView(View):
         embed = discord.Embed(
             title="☕ Goal Added",
             description=(
-                f"**{goal}**\n"
-                f"Priority: {priority.capitalize()}"
+                f"**{goal_data['goal']}**\n"
+                f"Priority: {priority.capitalize()}\n"
+                f"Type: {goal_data.get('goal_type', 'general').capitalize()}"
             ),
             color=0x2D3A47
         )
+
+        if goal_data.get("deadline"):
+            embed.add_field(
+                name="Deadline",
+                value=goal_data["deadline"],
+                inline=False
+            )
 
         embed.set_footer(
             text="one step at a time."
@@ -76,46 +108,119 @@ class GoalView(View):
         style=discord.ButtonStyle.danger,
         emoji="🟥"
     )
-    async def high(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await self.save_goal(
-            interaction,
-            "high"
-        )
+    async def high(self, interaction, button):
+        await self.save_goal(interaction, "high")
 
     @discord.ui.button(
         label="Medium",
         style=discord.ButtonStyle.secondary,
         emoji="🟨"
     )
-    async def medium(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await self.save_goal(
-            interaction,
-            "medium"
-        )
+    async def medium(self, interaction, button):
+        await self.save_goal(interaction, "medium")
 
     @discord.ui.button(
         label="Low",
         style=discord.ButtonStyle.success,
         emoji="🟩"
     )
-    async def low(
-        self,
-        interaction: discord.Interaction,
-        button: Button
-    ):
-        await self.save_goal(
-            interaction,
-            "low"
+    async def low(self, interaction, button):
+        await self.save_goal(interaction, "low")
+
+
+# ==========================================
+# AMBIGUOUS GOAL CONFIRMATION
+# ==========================================
+
+class GoalConfirmationView(View):
+
+    def __init__(self, user_id, goal_data):
+        super().__init__(timeout=300)
+
+        self.user_id = str(user_id)
+        self.goal_data = goal_data
+
+    @discord.ui.button(
+        label="Confirm Goal",
+        style=discord.ButtonStyle.success,
+        emoji="☑️"
+    )
+    async def confirm(self, interaction, button):
+
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This confirmation does not belong to you.",
+                ephemeral=True
+            )
+            return
+
+        goal_data = pending_goals.get(self.user_id)
+
+        if not goal_data:
+            await interaction.response.send_message(
+                "This goal confirmation has expired.",
+                ephemeral=True
+            )
+            return
+
+        add_goal(
+            self.user_id,
+            goal_data["goal"],
+            "medium",
+            deadline=goal_data.get("deadline"),
+            goal_type=goal_data.get("goal_type", "general")
         )
 
+        del pending_goals[self.user_id]
+
+        embed = discord.Embed(
+            title="☕ Goal Saved",
+            description=(
+                f"**{goal_data['goal']}**\n"
+                "Priority: Medium"
+            ),
+            color=0x2D3A47
+        )
+
+        if goal_data.get("deadline"):
+            embed.add_field(
+                name="Deadline",
+                value=goal_data["deadline"],
+                inline=False
+            )
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=embed,
+            view=None
+        )
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+        emoji="✖️"
+    )
+    async def cancel(self, interaction, button):
+
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This confirmation does not belong to you.",
+                ephemeral=True
+            )
+            return
+
+        pending_goals.pop(self.user_id, None)
+
+        await interaction.response.edit_message(
+            content="Goal discarded. Nothing was saved.",
+            embed=None,
+            view=None
+        )
+
+
+# ==========================================
+# MEMBER JOIN EVENT
+# ==========================================
 
 @bot.event
 async def on_member_join(member):
@@ -135,21 +240,26 @@ async def on_member_join(member):
             embed=dm_embed(member)
         )
 
-    except Exception:
-        print(
-            f"Could not DM {member.name}"
-        )
+    except discord.Forbidden:
+        print(f"Could not DM {member.name}")
 
+
+# ==========================================
+# BOT READY EVENT
+# ==========================================
 
 @bot.event
 async def on_ready():
 
     connect_db()
 
-    print(
-        f"{bot.user} is online!"
-    )
+    print(f"{bot.user} is online!")
+    print("Pulse is ready to help students.")
 
+
+# ==========================================
+# MESSAGE HANDLER
+# ==========================================
 
 @bot.event
 async def on_message(message):
@@ -157,7 +267,20 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if bot.user in message.mentions:
+    is_dm = isinstance(
+        message.channel,
+        discord.DMChannel
+    )
+
+    should_respond = (
+        is_dm
+        or (
+            not is_dm
+            and bot.user in message.mentions
+        )
+    )
+
+    if should_respond:
 
         question = message.content.replace(
             f"<@{bot.user.id}>",
@@ -167,26 +290,27 @@ async def on_message(message):
             ""
         ).strip()
 
-        user_id = str(
-            message.author.id
-        )
+        user_id = str(message.author.id)
 
-        # ADD GOAL
-        if question.lower().startswith(
-            "add goal"
-        ):
+        # ----------------------------------
+        # MANUAL ADD GOAL
+        # ----------------------------------
+
+        if question.lower().startswith("add goal"):
 
             goal = question[8:].strip()
 
             if not goal:
-
                 await message.author.send(
                     "Please enter a goal."
                 )
-
                 return
 
-            pending_goals[user_id] = goal
+            pending_goals[user_id] = {
+                "goal": goal,
+                "deadline": None,
+                "goal_type": "general"
+            }
 
             await message.author.send(
                 "☕ Choose a priority:",
@@ -195,12 +319,13 @@ async def on_message(message):
 
             return
 
+        # ----------------------------------
         # SHOW GOALS
+        # ----------------------------------
+
         if question.lower() == "show goals":
 
-            goals = get_goals(
-                user_id
-            )
+            goals = get_goals(user_id)
 
             if not goals:
 
@@ -210,34 +335,26 @@ async def on_message(message):
                     color=0x2D3A47
                 )
 
-                await message.author.send(
-                    embed=embed
+            else:
+
+                description = ""
+
+                for _, goal, priority in goals:
+
+                    if priority == "high":
+                        emoji = "🟥"
+                    elif priority == "medium":
+                        emoji = "🟨"
+                    else:
+                        emoji = "🟩"
+
+                    description += f"{emoji} **{goal}**\n"
+
+                embed = discord.Embed(
+                    title="☕ Your Goals",
+                    description=description,
+                    color=0x2D3A47
                 )
-
-                return
-
-            description = ""
-
-            for _, goal, priority in goals:
-
-                if priority == "high":
-                    emoji = "🟥"
-
-                elif priority == "medium":
-                    emoji = "🟨"
-
-                else:
-                    emoji = "🟩"
-
-                description += (
-                    f"{emoji} **{goal}**\n"
-                )
-
-            embed = discord.Embed(
-                title="☕ Your Goals",
-                description=description,
-                color=0x2D3A47
-            )
 
             embed.set_footer(
                 text="one step at a time."
@@ -249,6 +366,10 @@ async def on_message(message):
 
             return
 
+        # ----------------------------------
+        # EMPTY MESSAGE
+        # ----------------------------------
+
         if not question:
 
             await message.author.send(
@@ -257,17 +378,77 @@ async def on_message(message):
 
             return
 
+        # ----------------------------------
+        # GROQ AI + SQLITE MEMORY
+        # ----------------------------------
+
         try:
 
-            history = get_memory(
-                user_id
-            )
+            history = get_memory(user_id)
 
-            answer = await asyncio.to_thread(
-                ask_ai,
-                question,
-                history
-            )
+            async with message.channel.typing():
+
+                result = await asyncio.to_thread(
+                    analyze_message,
+                    question,
+                    history
+                )
+
+            answer = result["response"]
+            goal_data = result["goal_detection"]
+
+            # ----------------------------------
+            # EXPLICIT GOAL: SAVE AUTOMATICALLY
+            # ----------------------------------
+
+            if goal_data["intent"] == "explicit":
+
+                goal = goal_data["goal"]
+
+                add_goal(
+                    user_id,
+                    goal,
+                    "medium",
+                    deadline=goal_data.get("deadline"),
+                    goal_type=goal_data.get("goal_type", "general")
+                )
+
+                answer += (
+                    "\n\n☕ **Goal saved automatically.**\n"
+                    f"**Goal:** {goal}\n"
+                    "**Priority:** Medium"
+                )
+
+                if goal_data.get("deadline"):
+                    answer += (
+                        f"\n**Deadline:** {goal_data['deadline']}"
+                    )
+
+            # ----------------------------------
+            # AMBIGUOUS GOAL: ASK FOR CONFIRMATION
+            # ----------------------------------
+
+            elif goal_data["intent"] == "ambiguous":
+
+                goal = goal_data["goal"]
+
+                pending_goals[user_id] = {
+                    "goal": goal,
+                    "deadline": goal_data.get("deadline"),
+                    "goal_type": goal_data.get("goal_type", "general")
+                }
+
+                answer += (
+                    "\n\n☕ **Is this something you'd like "
+                    "me to track as a goal?**\n"
+                    f"**Suggested goal:** {goal}\n"
+                    "It will be saved with medium priority "
+                    "if you confirm."
+                )
+
+            # ----------------------------------
+            # SAVE CONVERSATION MEMORY
+            # ----------------------------------
 
             add_message(
                 user_id,
@@ -281,50 +462,73 @@ async def on_message(message):
                 answer
             )
 
-            if len(answer) > 3500:
+            # ----------------------------------
+            # SEND RESPONSE
+            # ----------------------------------
 
-                chunks = [
-                    answer[i:i + 3500]
-                    for i in range(
-                        0,
-                        len(answer),
-                        3500
+            chunks = [
+                answer[i:i + 3500]
+                for i in range(0, len(answer), 3500)
+            ]
+
+            for index, chunk in enumerate(chunks):
+
+                embed = pulse_embed(chunk)
+
+                view = None
+
+                if (
+                    index == len(chunks) - 1
+                    and goal_data["intent"] == "ambiguous"
+                ):
+                    view = GoalConfirmationView(
+                        user_id,
+                        goal_data
                     )
-                ]
 
-                for chunk in chunks:
+                if is_dm:
 
-                    embed = pulse_embed(
-                        chunk
+                    await message.channel.send(
+                        embed=embed,
+                        view=view
                     )
+
+                else:
 
                     await message.author.send(
-                        embed=embed
+                        embed=embed,
+                        view=view
                     )
 
-            else:
+        except discord.Forbidden:
 
-                embed = pulse_embed(
-                    answer
-                )
-
-                await message.author.send(
-                    embed=embed
-                )
+            print(
+                f"Cannot send DM to {message.author}"
+            )
 
         except Exception as e:
 
-            print(
-                f"AI Error: {e}"
-            )
+            print(f"AI Error: {e}")
 
-            await message.author.send(
-                "☕ Pulse is having trouble thinking right now. Please try again."
-            )
+            try:
+                await message.author.send(
+                    "☕ Pulse is having trouble thinking right now. Please try again."
+                )
 
-    await bot.process_commands(
-        message
-    )
+            except discord.Forbidden:
+                print(
+                    f"Could not notify {message.author}"
+                )
 
+    # ----------------------------------
+    # COMMAND PROCESSING
+    # ----------------------------------
+
+    await bot.process_commands(message)
+
+
+# ==========================================
+# START BOT
+# ==========================================
 
 bot.run(TOKEN)
